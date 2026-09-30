@@ -126,13 +126,14 @@ const Store = {
           S.months = new Map(raw.months || []);
           S.settings = { ...DEFAULT_SETTINGS, ...(raw.settings || {}) };
           S.requests = raw.requests || {};
+          S.reviewed = raw.reviewed || {};
         }
       } catch {}
       S.loaded.f = S.loaded.r = true; changed(true);
   },
   persistLocal() {
     if (this.mode !== 'local') return;
-    lsSet(LS_KEY, JSON.stringify({ furnaces: S.furnaces, months: [...S.months], settings: S.settings, requests: S.requests }));
+    lsSet(LS_KEY, JSON.stringify({ furnaces: S.furnaces, months: [...S.months], settings: S.settings, requests: S.requests, reviewed: S.reviewed }));
   },
   async setMonth(id, body) { if (this.mode === 'sb') return; if (this.mode === 'db') await this.db.doc('readings/' + id).set(body); else this.persistLocal(); },
   async delMonth(id) { if (this.mode === 'sb') return; if (this.mode === 'db') await this.db.doc('readings/' + id).delete(); else this.persistLocal(); },
@@ -618,6 +619,7 @@ function viewOverview(main) {
     ${figG}
     <div class="fig"><div class="k">Readings in today</div><div class="v">${readToday}<small>of ${act.length}</small></div><div class="n">${readToday < act.length && S.canWrite ? '<a href="#" id="toEntry">Enter today’s readings</a>' : fmtDate(t)}</div></div>
   </section>
+  ${checkPanel()}
   ${recentPanel()}
   <div class="cols">
     <section class="panel">
@@ -643,7 +645,7 @@ function viewOverview(main) {
         ${flagged.filter(x => x.g === g).sort((p, q) => p.f.order - q.f.order || (p.d < q.d ? 1 : -1)).map(({ f, d, r }) => `<tr class="click" data-fid="${esc(f.id)}"><td class="fcell">${esc(f.name)}</td><td>${weekday(d)} ${fmtDay(d)}</td><td class="num">${r.c == null ? '–' : fmt(r.c)}</td><td class="num">${fmt(r.base)}</td><td>${statusPill(r)}</td></tr>`).join('')}</tbody>`).join('')}
     </table></div>` : `<p class="muted">Every furnace stayed within its usual range over the last week.</p>`}
   </section>`;
-  bindRange(main); bindSwitcher(main); bindRecent(main);
+  bindRange(main); bindSwitcher(main); bindRecent(main); bindCheck(main);
   $$('tr[data-fid]', main).forEach(tr => tr.addEventListener('click', () => go('furnace', tr.dataset.fid)));
   $$('tr[data-group]', main).forEach(tr => tr.addEventListener('click', () => { S.group = tr.dataset.group; go('group'); }));
   const te = $('#toEntry'); te && te.addEventListener('click', e => { e.preventDefault(); S.entryDate = todayISO(); go('entry'); });
@@ -1704,9 +1706,27 @@ function reqAnswered(r) {
   const e = entryAt(r.fid, r.date); return !!(e && e.at > r.at);
 }
 
+/* ---------- read / unread: the manager ticks off batches he has checked ---------- */
+S.reviewed = {};          // 'date|by' -> ms when marked as read
+S.recentHist = false;
+const batchKey = b => b.date + '|' + b.by;
+const isRead = b => (S.reviewed[batchKey(b)] || 0) >= b.at;   // new or corrected readings make it unread again
+async function setRead(batches, read) {
+  if (!batches.length) return;
+  const rows = batches.map(b => ({ reading_date: b.date, entered_by: b.by, reviewed_at: new Date(Math.max(Date.now(), b.at)).toISOString() }));
+  batches.forEach((b, i) => { if (read) S.reviewed[batchKey(b)] = Date.parse(rows[i].reviewed_at); else delete S.reviewed[batchKey(b)]; });
+  changed(true);
+  if (Store.mode === 'sb') {
+    let error;
+    if (read) ({ error } = await SB.client.from('reviewed_batches').upsert(rows, { onConflict: 'reading_date,entered_by' }));
+    else for (const b of batches) { ({ error } = await SB.client.from('reviewed_batches').delete().eq('reading_date', b.date).eq('entered_by', b.by)); if (error) break; }
+    if (error) toast(sbErr(error), true);
+  } else Store.persistLocal();
+}
+
 /* ---------- batches of recently added readings ---------- */
 function recentBatches() {
-  const since = Date.now() - 21 * 864e5, map = new Map();
+  const since = Date.now() - 90 * 864e5, map = new Map();
   for (const f of activeFurnaces()) {
     for (const e of entriesOf(f.id)) {
       if (!e.at || e.at < since || e.by === 'Import') continue;
@@ -1715,17 +1735,19 @@ function recentBatches() {
       const b = map.get(key); b.at = Math.max(b.at, e.at); b.rows.push({ f, e });
     }
   }
-  const out = [...map.values()].sort((a, b) => b.at - a.at).slice(0, 6);
+  const out = [...map.values()].sort((a, b) => b.at - a.at);
   out.forEach(b => b.rows.sort((p, q) => byOrder(p.f, q.f)));
   return out;
 }
 const whenStr = t => new Date(t).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 function recentPanel() {
-  const batches = recentBatches();
+  const all = recentBatches(), unread = all.filter(b => !isRead(b)), read = all.filter(isRead);
+  const hist = S.recentHist, MAX = hist ? 30 : 8;
+  const batches = (hist ? read : unread).slice(0, MAX), hidden = (hist ? read : unread).length - batches.length;
   const open = Object.entries(S.requests).filter(([, r]) => r.status === 'open' && furnace(r.fid)).sort((a, b) => b[1].at - a[1].at);
-  if (!batches.length && !open.length) return '';
-  if (S.recentOpen == null && batches[0]) S.recentOpen = batches[0].date + '|' + batches[0].by;
+  if (!all.length && !open.length) return '';
+  if (S.recentOpen == null && unread[0]) S.recentOpen = batchKey(unread[0]);
   const rowInfo = (f, e) => {
     const a = analyse(f), r = a.daily.get(e.date);
     let warn = !!(r && ['high', 'low', 'drop'].includes(r.status)), extra = '';
@@ -1753,6 +1775,8 @@ function recentPanel() {
         <span>${b.rows.length} reading${b.rows.length > 1 ? 's' : ''}${b.by ? ` by <strong>${esc(b.by)}</strong>` : ''}</span>
         <span class="muted">sent ${whenStr(b.at)}</span>
         <span class="b-tags">${notes ? `<span class="pill est">${notes} note${notes > 1 ? 's' : ''}</span>` : ''}${warns ? `<span class="pill warn">${warns} to check</span>` : ''}</span>
+        ${hist ? `<span class="muted b-read">read ${whenStr(S.reviewed[key])}</span>` : ''}
+        ${S.canWrite ? `<button class="btn small ${hist ? 'ghost' : ''} b-mark" data-read="${esc(key)}" data-to="${hist ? '0' : '1'}" title="${hist ? 'Show it in Recently added again' : 'Remove from this list; it stays in History'}">${hist ? 'Mark as unread' : '✓ Mark as read'}</button>` : ''}
       </summary>
       ${rows.length ? `<div class="tw"><table class="recent-t">
         <thead><tr><th>Furnace</th><th class="num">Reading</th><th class="num">Used</th><th>Check</th><th>Note</th><th></th></tr></thead>
@@ -1767,17 +1791,30 @@ function recentPanel() {
         </tr>`; }).join('')}</tbody></table></div>` : '<p class="muted" style="margin:10px 0 0">Nothing with notes or warnings in this batch.</p>'}
     </details>`;
   }).join('');
+  const empty = hist ? 'Nothing marked as read in the last 90 days.' : read.length ? 'All caught up — every recent batch is marked as read.' : 'No readings added in the last 90 days.';
   return `<section class="panel recent">
-    <div class="ph"><h2>Recently added</h2>
-      <label class="check"><input type="checkbox" id="recentOnly" ${S.recentOnly ? 'checked' : ''}>Only notes, warnings and requests</label>
+    <div class="ph"><h2>${hist ? 'Read history' : 'Recently added'}${!hist && unread.length ? ` <span class="pill warn">${unread.length} unread</span>` : ''}</h2>
+      <div class="recent-tools">
+        <label class="check"><input type="checkbox" id="recentOnly" ${S.recentOnly ? 'checked' : ''}>Only notes, warnings and requests</label>
+        ${!hist && unread.length > 1 && S.canWrite ? '<button class="btn small" id="readAll">✓ Mark all as read</button>' : ''}
+        <button class="btn small ghost" id="recentHist">${hist ? '‹ Back to unread' : `History${read.length ? ` (${read.length})` : ''}`}</button>
+      </div>
     </div>
-    ${reqList}
-    ${body || '<p class="muted">No readings added in the last three weeks.</p>'}
+    ${hist ? '' : reqList}
+    ${body || `<p class="muted">${empty}</p>`}
+    ${hidden > 0 ? `<p class="muted chk-more">+ ${hidden} older ${hist ? 'read' : 'unread'} batch${hidden > 1 ? 'es' : ''}${hist ? '' : ' — use Mark all as read to clear them'}</p>` : ''}
   </section>`;
 }
 function bindRecent(main) {
   const ro = $('#recentOnly', main);
   ro && ro.addEventListener('change', () => { S.recentOnly = ro.checked; lsSet('midal-gas-recent-only', ro.checked ? '1' : '0'); render(true); });
+  const rh = $('#recentHist', main); rh && rh.addEventListener('click', () => { S.recentHist = !S.recentHist; render(true); });
+  const ra = $('#readAll', main); ra && ra.addEventListener('click', () => setRead(recentBatches().filter(b => !isRead(b)), true));
+  $$('[data-read]', main).forEach(b => b.addEventListener('click', e => {
+    e.preventDefault(); e.stopPropagation();   // the button sits inside <summary>: don't open/close the batch
+    const batch = recentBatches().find(x => batchKey(x) === b.dataset.read);
+    if (batch) setRead([batch], b.dataset.to === '1');
+  }));
   $$('details.batch', main).forEach(d => d.addEventListener('toggle', () => { if (d.open) S.recentOpen = d.dataset.key; else if (S.recentOpen === d.dataset.key) S.recentOpen = ''; }));
   $$('[data-openf]', main).forEach(a => a.addEventListener('click', e => { e.preventDefault(); go('furnace', a.dataset.openf); }));
   $$('[data-redit]', main).forEach(b => b.addEventListener('click', () => { const [fid, date] = b.dataset.redit.split('|'); openReading(fid, date); }));
@@ -1788,6 +1825,115 @@ function bindRecent(main) {
     if (Store.mode === 'sb') { changed(true); const { error } = await SB.client.from('requests').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', id); if (error) toast(sbErr(error), true); return; }
     await saveRequests();
   }));
+}
+
+/* ---------- data entry check: missed days, readings to check, latest activity ---------- */
+S.chkDays = [7, 14, 30].includes(+lsGet('midal-gas-check-days')) ? +lsGet('midal-gas-check-days') : 14;
+const isoOf = t => { const d = new Date(t); return ymd(d.getFullYear(), d.getMonth() + 1, d.getDate()); };
+const agoStr = t => { const m = Math.round((Date.now() - t) / 6e4); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' days ago'; };
+/* ['2026-09-03','2026-09-04','2026-09-09'] -> "3–4 Sep, 9 Sep" */
+function dayRanges(ds) {
+  const out = [];
+  for (const d of ds) { const l = out[out.length - 1]; if (l && addDays(l[1], 1) === d) l[1] = d; else out.push([d, d]); }
+  return out.map(([a, b]) => a === b ? fmtDay(a) : `${fmtDay(a)}–${fmtDay(b)}`).join(', ');
+}
+/* same ideas as the supervisor's typo warnings, applied to what was saved */
+function entryIssue(a, e, prev) {
+  const r = a.daily.get(e.date);
+  if (a.meter && prev && e.v < prev.v) return { r, label: 'Lower than last reading', cls: 'err' };
+  if (!r || !(r.c > 0)) return null;
+  const b = r.base ?? baselineBefore(a, e.date), thr = +S.settings.threshold || 40;
+  if (!(b > 0)) return null;
+  if (a.meter && prev && r.c > b * 3) {
+    const alt = (e.v / 10 - prev.v) / Math.max(1, diffDays(prev.date, e.date));
+    if (alt >= 0 && alt <= b * 3) return { r, b, label: 'Extra digit?', cls: 'err' };
+  }
+  if (Math.abs(r.c - b) / b * 100 > thr) return { r, b, label: r.c > b ? 'High' : 'Low', cls: 'warn' };
+  return null;
+}
+function checkPanel() {
+  const act = activeFurnaces();
+  if (!act.length) return '';
+  const n = S.chkDays, t = todayISO(), y = addDays(t, -1), from = addDays(t, -(n - 1));
+  let latest = null, expected = 0, got = 0;
+  const missing = [], issues = [], notes = [], late = [], noData = [], have = new Map();
+  for (const f of act) {
+    const a = analyse(f), es = a.entries;
+    if (!es.length) { noData.push(f); continue; }
+    const set = new Set(es.map(e => e.date)); have.set(f.id, { set, first: es[0].date });
+    const miss = [];
+    for (let d = es[0].date > from ? es[0].date : from; d <= y; d = addDays(d, 1)) { expected++; if (set.has(d)) got++; else miss.push(d); }
+    if (miss.length) missing.push({ f, miss });
+    es.forEach((e, i) => {
+      if (e.at && (!latest || e.at > latest.at)) latest = { ...e, f };
+      if (e.date < from) return;
+      const iss = entryIssue(a, e, es[i - 1]);
+      if (iss) issues.push({ f, e, ...iss });
+      if (e.note) notes.push({ f, e });
+      if (e.at && e.by !== 'Import' && diffDays(e.date, isoOf(e.at)) >= 2) late.push({ f, e });
+    });
+  }
+  const todayIn = act.filter(f => have.get(f.id)?.set.has(t)).length;
+  let complete = null;
+  for (let i = 0, d = t; i < 90 && have.size; i++, d = addDays(d, -1)) {
+    if ([...have.values()].every(h => h.first > d || h.set.has(d))) { complete = d; break; }
+  }
+  const fill = expected ? Math.round(got / expected * 100) : null;
+  missing.sort((p, q) => q.miss.length - p.miss.length || byOrder(p.f, q.f));
+  issues.sort((p, q) => p.e.date < q.e.date ? 1 : p.e.date > q.e.date ? -1 : byOrder(p.f, q.f));
+  const extra = [...notes.map(x => ({ ...x, k: 'note' })), ...late.filter(x => !x.e.note).map(x => ({ ...x, k: 'late' }))]
+    .sort((p, q) => q.e.at - p.e.at);
+  const more = (list, max) => list.length > max ? `<p class="muted chk-more">+ ${list.length - max} more</p>` : '';
+  const fLink = f => `<a href="#" data-openf="${esc(f.id)}">${esc(f.name)}</a>`;
+  const lateTag = e => diffDays(e.date, isoOf(e.at)) >= 2 ? ` <span class="pill est">sent ${diffDays(e.date, isoOf(e.at))} days later</span>` : '';
+
+  const missBox = missing.length || noData.length ? missing.slice(0, 12).map(({ f, miss }) => `<div class="chk-row">
+      ${fLink(f)} <span class="pill err">${miss.length} day${miss.length > 1 ? 's' : ''}</span>
+      <span class="muted grow">${dayRanges(miss)}</span>
+      ${S.canWrite ? `<button class="btn small ghost" data-fill="${miss[miss.length - 1]}">Enter</button>` : ''}
+    </div>`).join('') + more(missing, 12)
+    + (noData.length ? `<div class="chk-row"><span class="grow"><strong>No readings yet:</strong> <span class="muted">${noData.map(f => esc(f.name)).join(', ')}</span></span></div>` : '')
+    : `<p class="muted">Every furnace has a reading for each day up to yesterday.</p>`;
+
+  const issueBox = issues.length ? issues.slice(0, 12).map(({ f, e, r, b, label, cls }) => { const rq = reqFor(f.id, e.date);
+    return `<div class="chk-row">
+      ${fLink(f)} <span class="muted">${weekday(e.date)} ${fmtDay(e.date)}</span> <span class="pill ${cls}">${esc(label)}</span>
+      <span class="grow chk-sub">Reading <strong>${fmt(e.v, 2)}</strong>${r && r.c != null ? ` · used ${fmt(r.c)}${r.span > 1 ? '/day' : ''}` : ''}${b ? ` · usual ${fmt(b)}` : ''}${e.by ? ` · by ${esc(e.by)}` : ''}</span>
+      ${S.canWrite ? `${rq ? `<span class="pill ${reqAnswered(rq[1]) ? 'ok' : 'warn'}">${reqAnswered(rq[1]) ? 'Updated' : 'Asked'}</span>` : `<button class="btn small" data-ask="${esc(f.id)}|${e.date}">Ask to change</button>`} <button class="btn small ghost" data-redit="${esc(f.id)}|${e.date}">Edit</button>` : ''}
+    </div>`; }).join('') + more(issues, 12)
+    : `<p class="muted">No readings look unrealistic in this period.</p>`;
+
+  const noteBox = extra.length ? extra.slice(0, 10).map(({ f, e, k }) => `<div class="chk-row">
+      ${fLink(f)} <span class="muted">${weekday(e.date)} ${fmtDay(e.date)}</span>${lateTag(e)}
+      <span class="grow chk-sub">${k === 'note' ? `<span class="note-txt">${esc(e.note)}</span>` : `Reading ${fmt(e.v, 2)}`}${e.by ? ` <span class="muted">· ${esc(e.by)}</span>` : ''}${e.at ? ` <span class="muted">· ${whenStr(e.at)}</span>` : ''}</span>
+    </div>`).join('') + more(extra, 10)
+    : `<p class="muted">No notes or late entries in this period.</p>`;
+
+  return `<section class="panel chk">
+    <div class="ph"><h2>Data entry check</h2>
+      <div class="seg" role="group" aria-label="Check period">${[7, 14, 30].map(k => `<button data-chk="${k}" aria-pressed="${n === k}">${k} days</button>`).join('')}</div>
+    </div>
+    <div class="chk-stats">
+      <div class="${latest && Date.now() - latest.at > 2 * 864e5 ? 'bad' : ''}"><div class="k">Latest data added</div>
+        <div class="v">${latest ? agoStr(latest.at) : 'Nothing yet'}</div>
+        <div class="n">${latest ? `${esc(latest.f.name)} for ${weekday(latest.date)} ${fmtDay(latest.date)}${latest.by ? ` · by ${esc(latest.by)}` : ''} · ${whenStr(latest.at)}` : 'No readings have been saved'}</div></div>
+      <div class="${todayIn < act.length ? 'warn' : 'good'}"><div class="k">Today’s readings</div>
+        <div class="v">${todayIn} of ${act.length}</div><div class="n">${fmtDate(t)}</div></div>
+      <div class="${complete === t || complete === y ? 'good' : 'warn'}"><div class="k">Last complete day</div>
+        <div class="v">${complete ? `${weekday(complete)} ${fmtDay(complete)}` : 'None'}</div><div class="n">${complete ? 'All furnaces have a reading' : 'No day in the last 90 has every reading'}</div></div>
+      <div class="${fill == null ? '' : fill >= 100 ? 'good' : fill >= 90 ? 'warn' : 'bad'}"><div class="k">Filled in, last ${n} days</div>
+        <div class="v">${fill == null ? '–' : fill + '%'}</div><div class="n">${got} of ${expected} furnace-days, up to yesterday</div></div>
+    </div>
+    <div class="chk-cols">
+      <div class="chk-box"><h3>Missing readings ${missing.length ? `<span class="pill err">${missing.reduce((s, x) => s + x.miss.length, 0)}</span>` : '<span class="pill ok">None</span>'}</h3>${missBox}</div>
+      <div class="chk-box"><h3>Readings to check ${issues.length ? `<span class="pill warn">${issues.length}</span>` : '<span class="pill ok">None</span>'}</h3>${issueBox}</div>
+      <div class="chk-box"><h3>Notes and late entries ${extra.length ? `<span class="pill est">${extra.length}</span>` : ''}</h3>${noteBox}</div>
+    </div>
+  </section>`;
+}
+function bindCheck(main) {
+  $$('[data-chk]', main).forEach(b => b.addEventListener('click', () => { S.chkDays = +b.dataset.chk; lsSet('midal-gas-check-days', String(S.chkDays)); render(true); }));
+  $$('[data-fill]', main).forEach(b => b.addEventListener('click', () => { S.entryDate = b.dataset.fill; go('entry'); }));
 }
 
 /* ---------- ask dialog ---------- */
@@ -1865,7 +2011,7 @@ const TXT = {
     sent: 'Sent', notSent: 'Not sent yet', editSent: 'Change sent readings', sentAt: 'Sent at',
     last: 'Last reading', noPrev: 'No earlier reading', used: 'Used', perDay: 'per day', since: 'since',
     next: 'Next', prev: 'Back', skip: 'Skip', review: 'Review', send: 'Send readings', sending: 'Sending…',
-    stopped: 'Stopped', stoppedHint: 'same as last', maint: 'Maintenance', meter: 'Meter problem',
+    stopped: 'Stopped', stoppedHint: 'same as last', zeroHint: 'use 0', maint: 'Maintenance', meter: 'Meter problem',
     lower: 'Lower than the last reading', decimal: 'Too high — did you miss the decimal point?', missing: 'Too low — is a digit missing?',
     high: 'Not realistic — much higher than usual', low: 'Not realistic — much lower than usual', ok: 'Looks right', first: 'First reading for this furnace', zero: 'No gas used',
     confirmT: 'This number looks wrong', confirmB: 'Please look at the meter again before you continue.', fix: 'Fix it', correct: 'It is correct',
@@ -1887,7 +2033,7 @@ const TXT = {
     sent: 'تم الإرسال', notSent: 'لم تُرسل بعد', editSent: 'تعديل القراءات المرسلة', sentAt: 'أُرسلت الساعة',
     last: 'آخر قراءة', noPrev: 'لا توجد قراءة سابقة', used: 'الاستهلاك', perDay: 'في اليوم', since: 'منذ',
     next: 'التالي', prev: 'رجوع', skip: 'تخطي', review: 'مراجعة', send: 'إرسال القراءات', sending: 'جارٍ الإرسال…',
-    stopped: 'متوقف', stoppedHint: 'نفس القراءة السابقة', maint: 'صيانة', meter: 'مشكلة في العداد',
+    stopped: 'متوقف', stoppedHint: 'نفس القراءة السابقة', zeroHint: 'الاستهلاك 0', maint: 'صيانة', meter: 'مشكلة في العداد',
     lower: 'أقل من القراءة السابقة', decimal: 'مرتفعة جداً — هل نسيت الفاصلة العشرية؟', missing: 'منخفضة جداً — هل هناك رقم ناقص؟',
     high: 'غير واقعية — أعلى بكثير من المعتاد', low: 'غير واقعية — أقل بكثير من المعتاد', ok: 'تبدو صحيحة', first: 'أول قراءة لهذا الفرن', zero: 'لا يوجد استهلاك',
     confirmT: 'هذا الرقم يبدو غير صحيح', confirmB: 'انظر إلى العداد مرة أخرى قبل المتابعة.', fix: 'تصحيح', correct: 'الرقم صحيح',
@@ -2036,6 +2182,8 @@ async function sbLoadRequests() {
   const { data } = await SB.client.from('requests').select('*').order('created_at');
   S.requests = {};
   (data || []).forEach(q => { S.requests[q.id] = { fid: q.furnace_id, date: q.reading_date, msg: q.message, at: Date.parse(q.created_at), status: q.status, closedAt: q.closed_at ? Date.parse(q.closed_at) : 0 }; });
+  const rv = await SB.client.from('reviewed_batches').select('reading_date, entered_by, reviewed_at');
+  if (!rv.error) { S.reviewed = {}; (rv.data || []).forEach(r => { S.reviewed[r.reading_date + '|' + r.entered_by] = Date.parse(r.reviewed_at); }); }
 }
 async function sbLoadAll() {
   try {
@@ -2189,6 +2337,8 @@ function spHome(main) {
 }
 function spEntry(main) {
   const f = SS.furnaces[SS.idx], d = supVal(f.id), st = supStatus(f), L = SS.last[f.id];
+  /* Stopped / Maintenance / Meter problem = no gas counted: the meter stays at the last reading */
+  const same = f.mode === 'consumption' ? '0' : L && L.prev_value != null ? String(L.prev_value) : null;
   const n = SS.furnaces.length, isLast = SS.idx === n - 1;
   const g = groupOf(f);
   main.innerHTML = `<div class="sp sp-entry">
@@ -2200,9 +2350,7 @@ function spEntry(main) {
       <div class="sp-num ${st.state}" dir="ltr" aria-live="polite">${d.v ? esc(d.v) : `<span class="ph">${T('typed')}</span>`}</div>
       <div class="sp-check ${st.state}">${st.state === 'empty' ? '&nbsp;' : `${st.state === 'red' ? '✕' : '✓'} ${esc(st.msg)}${st.used != null && st.state !== 'empty' && f.mode !== 'consumption' ? ` · ${T('used')} <span dir="ltr">${fmt(st.used)}</span>${st.gap > 1 ? ' ' + T('perDay') : ''}` : ''}`}</div>
       <div class="sp-chips">
-        ${f.mode !== 'consumption' && L && L.prev_value != null ? `<button class="sp-chip ${d.note === T('stopped') ? 'on' : ''}" data-chip="stopped">${T('stopped')}<small>${T('stoppedHint')}</small></button>` : ''}
-        <button class="sp-chip ${d.note === T('maint') ? 'on' : ''}" data-chip="maint">${T('maint')}</button>
-        <button class="sp-chip ${d.note === T('meter') ? 'on' : ''}" data-chip="meter">${T('meter')}</button>
+        ${['stopped', 'maint', 'meter'].map(k => `<button class="sp-chip ${d.note === T(k) ? 'on' : ''}" data-chip="${k}">${T(k)}${same != null ? `<small>${T(f.mode === 'consumption' ? 'zeroHint' : 'stoppedHint')}</small>` : ''}</button>`).join('')}
       </div>
     </div>
     <div class="sp-pad" dir="ltr">${['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '⌫'].map(k => `<button class="sp-key ${k === '⌫' ? 'del' : ''}" data-k="${k}">${k}</button>`).join('')}</div>
@@ -2224,9 +2372,8 @@ function spEntry(main) {
   document.addEventListener('keydown', SS.keyHandler);
   $$('[data-chip]', main).forEach(b => b.onclick = () => {
     const kind = b.dataset.chip, label = T(kind), cur = supVal(f.id);
-    if (cur.note === label) { supSet(f.id, { note: '' }); }
-    else if (kind === 'stopped') supSet(f.id, { note: label, v: String(L.prev_value), ok: false });
-    else supSet(f.id, { note: label });
+    if (cur.note === label) supSet(f.id, { note: '', ...(same != null && cur.v === same ? { v: '' } : {}) });
+    else supSet(f.id, { note: label, ...(same != null ? { v: same, ok: false } : {}) });
     renderSimpleSup();
   });
   $$('[data-go]', main).forEach(b => b.onclick = () => { SS.idx = +b.dataset.go; renderSimpleSup(); });

@@ -43,7 +43,8 @@ Supabase. Role comes from `public.profiles.role` on the server, never from the b
 
 ## Database (see `supabase-setup.sql`)
 Tables: `profiles`, `furnaces`, `readings` (PK furnace_id+reading_date), `settings` (single row),
-`requests` (manager → supervisor change requests), `readings_log` (audit trail via trigger).
+`requests` (manager → supervisor change requests), `readings_log` (audit trail via trigger),
+`reviewed_batches` (manager marked a Recently added batch as read; manager only).
 
 Security model — **the database enforces everything; the page only chooses which screen to show**:
 - RLS on every table. `readings`, `requests`, `readings_log`: manager only. `furnaces`, `settings`:
@@ -79,7 +80,7 @@ Helpers & state → `Store` (modes: `sb` = Supabase, `local` = browser-only prac
 legacy claude.ai artifact storage; the `db` paths are unused on GitHub Pages) → analytics
 (`analyse()`, `sumRange()`, baselines) → groups/rail/switcher/find (Ctrl+K) → Overview, Group,
 Compare, Furnace views → Daily entry (manager table) → Furnaces & settings → legacy in-Claude
-supervisor code → Recently added + requests → Supabase layer (`sbBoot`, login screen, `sbLoadAll`,
+supervisor code → Recently added + requests → Data entry check (`checkPanel()`: missing days, unrealistic readings, notes/late entries, latest activity; Overview) → Supabase layer (`sbBoot`, login screen, `sbLoadAll`,
 `sbPoll` every 60 s, `sbWrite` upserts in batches of 500) → simple supervisor wizard (`SS`, `sp*`
 functions, `supCheck()` rules) → Import/Export → boot.
 

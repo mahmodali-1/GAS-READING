@@ -256,6 +256,19 @@ grant execute on function public.my_day(date) to authenticated;
 grant execute on function public.my_requests() to authenticated;
 
 
+-- batches of readings the manager has marked as read on the Overview
+create table if not exists public.reviewed_batches (
+  reading_date date not null,
+  entered_by   text not null default '',
+  reviewed_at  timestamptz not null default now(),
+  primary key (reading_date, entered_by),
+  constraint reviewed_by_len check (char_length(entered_by) <= 60)
+);
+alter table public.reviewed_batches enable row level security;
+drop policy if exists "reviewed: manager all" on public.reviewed_batches;
+create policy "reviewed: manager all" on public.reviewed_batches
+  for all to authenticated using (public.is_manager()) with check (public.is_manager());
+
 -- ------------------------------------------------------------ hardening
 -- data limits (reject nonsense even from the manager's own screen)
 do $$ begin
@@ -325,6 +338,12 @@ alter default privileges in schema public revoke all on tables from anon;
 alter default privileges in schema public revoke all on sequences from anon;
 revoke all on public.readings_log from authenticated;
 grant select on public.readings_log to authenticated;
+-- signed-in users only get what the row rules above cover: no TRUNCATE
+-- (it ignores row security), no triggers, no creating/deleting profiles
+revoke truncate, trigger, references on all tables in schema public from authenticated;
+alter default privileges in schema public revoke truncate, trigger, references on tables from authenticated;
+revoke insert, delete on public.profiles from authenticated;
+alter default privileges in schema public revoke execute on functions from anon, public;
 
 revoke all on function public.my_role() from public, anon;
 revoke all on function public.is_manager() from public, anon;
