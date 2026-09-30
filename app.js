@@ -13,7 +13,7 @@ document.body.classList.add('ok');
    ========================================================= */
 const CONFIG = Object.assign({
   supabaseUrl: '', supabaseKey: '',
-  managerEmail: 'manager@example.com', supervisorEmail: 'supervisor@example.com',
+  managerEmail: 'mahmood.ali@midalcable.com', supervisorEmail: 'supervisor@example.com',
 }, window.MIDAL_CONFIG || {});
 
 
