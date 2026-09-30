@@ -27,8 +27,8 @@ consumption analytics. Hosted on **GitHub Pages** (this repo) with a **Supabase*
 
 ## Roles and logins
 Login screen offers two cards: **Supervisor** and **Manager**; user types only a password.
-Logins are Supabase Auth users `mahmood.ali@midalcable.com` (manager) and `supervisor@example.com` (not created yet)
-(placeholder emails; mapping is in `CONFIG.managerEmail` / `supervisorEmail`). Passwords live only in
+Logins are Supabase Auth users `mahmood.ali@midalcable.com` (manager) and `mahmood02ali@gmail.com` (supervisor)
+(mapping is in `CONFIG.managerEmail` / `supervisorEmail`). Passwords live only in
 Supabase. Role comes from `public.profiles.role` on the server, never from the button pressed.
 
 - **Manager**: full dashboard — Overview (HF/TF split, Recently added panel with notes and change
