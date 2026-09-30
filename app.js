@@ -618,6 +618,7 @@ function viewOverview(main) {
     ${figG}
     <div class="fig"><div class="k">Readings in today</div><div class="v">${readToday}<small>of ${act.length}</small></div><div class="n">${readToday < act.length && S.canWrite ? '<a href="#" id="toEntry">Enter today’s readings</a>' : fmtDate(t)}</div></div>
   </section>
+  ${checkPanel()}
   ${recentPanel()}
   <div class="cols">
     <section class="panel">
@@ -643,7 +644,7 @@ function viewOverview(main) {
         ${flagged.filter(x => x.g === g).sort((p, q) => p.f.order - q.f.order || (p.d < q.d ? 1 : -1)).map(({ f, d, r }) => `<tr class="click" data-fid="${esc(f.id)}"><td class="fcell">${esc(f.name)}</td><td>${weekday(d)} ${fmtDay(d)}</td><td class="num">${r.c == null ? '–' : fmt(r.c)}</td><td class="num">${fmt(r.base)}</td><td>${statusPill(r)}</td></tr>`).join('')}</tbody>`).join('')}
     </table></div>` : `<p class="muted">Every furnace stayed within its usual range over the last week.</p>`}
   </section>`;
-  bindRange(main); bindSwitcher(main); bindRecent(main);
+  bindRange(main); bindSwitcher(main); bindRecent(main); bindCheck(main);
   $$('tr[data-fid]', main).forEach(tr => tr.addEventListener('click', () => go('furnace', tr.dataset.fid)));
   $$('tr[data-group]', main).forEach(tr => tr.addEventListener('click', () => { S.group = tr.dataset.group; go('group'); }));
   const te = $('#toEntry'); te && te.addEventListener('click', e => { e.preventDefault(); S.entryDate = todayISO(); go('entry'); });
@@ -1788,6 +1789,115 @@ function bindRecent(main) {
     if (Store.mode === 'sb') { changed(true); const { error } = await SB.client.from('requests').update({ status: 'closed', closed_at: new Date().toISOString() }).eq('id', id); if (error) toast(sbErr(error), true); return; }
     await saveRequests();
   }));
+}
+
+/* ---------- data entry check: missed days, readings to check, latest activity ---------- */
+S.chkDays = [7, 14, 30].includes(+lsGet('midal-gas-check-days')) ? +lsGet('midal-gas-check-days') : 14;
+const isoOf = t => { const d = new Date(t); return ymd(d.getFullYear(), d.getMonth() + 1, d.getDate()); };
+const agoStr = t => { const m = Math.round((Date.now() - t) / 6e4); return m < 1 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' days ago'; };
+/* ['2026-09-03','2026-09-04','2026-09-09'] -> "3–4 Sep, 9 Sep" */
+function dayRanges(ds) {
+  const out = [];
+  for (const d of ds) { const l = out[out.length - 1]; if (l && addDays(l[1], 1) === d) l[1] = d; else out.push([d, d]); }
+  return out.map(([a, b]) => a === b ? fmtDay(a) : `${fmtDay(a)}–${fmtDay(b)}`).join(', ');
+}
+/* same ideas as the supervisor's typo warnings, applied to what was saved */
+function entryIssue(a, e, prev) {
+  const r = a.daily.get(e.date);
+  if (a.meter && prev && e.v < prev.v) return { r, label: 'Lower than last reading', cls: 'err' };
+  if (!r || !(r.c > 0)) return null;
+  const b = r.base ?? baselineBefore(a, e.date), thr = +S.settings.threshold || 40;
+  if (!(b > 0)) return null;
+  if (a.meter && prev && r.c > b * 3) {
+    const alt = (e.v / 10 - prev.v) / Math.max(1, diffDays(prev.date, e.date));
+    if (alt >= 0 && alt <= b * 3) return { r, b, label: 'Extra digit?', cls: 'err' };
+  }
+  if (Math.abs(r.c - b) / b * 100 > thr) return { r, b, label: r.c > b ? 'High' : 'Low', cls: 'warn' };
+  return null;
+}
+function checkPanel() {
+  const act = activeFurnaces();
+  if (!act.length) return '';
+  const n = S.chkDays, t = todayISO(), y = addDays(t, -1), from = addDays(t, -(n - 1));
+  let latest = null, expected = 0, got = 0;
+  const missing = [], issues = [], notes = [], late = [], noData = [], have = new Map();
+  for (const f of act) {
+    const a = analyse(f), es = a.entries;
+    if (!es.length) { noData.push(f); continue; }
+    const set = new Set(es.map(e => e.date)); have.set(f.id, { set, first: es[0].date });
+    const miss = [];
+    for (let d = es[0].date > from ? es[0].date : from; d <= y; d = addDays(d, 1)) { expected++; if (set.has(d)) got++; else miss.push(d); }
+    if (miss.length) missing.push({ f, miss });
+    es.forEach((e, i) => {
+      if (e.at && (!latest || e.at > latest.at)) latest = { ...e, f };
+      if (e.date < from) return;
+      const iss = entryIssue(a, e, es[i - 1]);
+      if (iss) issues.push({ f, e, ...iss });
+      if (e.note) notes.push({ f, e });
+      if (e.at && e.by !== 'Import' && diffDays(e.date, isoOf(e.at)) >= 2) late.push({ f, e });
+    });
+  }
+  const todayIn = act.filter(f => have.get(f.id)?.set.has(t)).length;
+  let complete = null;
+  for (let i = 0, d = t; i < 90 && have.size; i++, d = addDays(d, -1)) {
+    if ([...have.values()].every(h => h.first > d || h.set.has(d))) { complete = d; break; }
+  }
+  const fill = expected ? Math.round(got / expected * 100) : null;
+  missing.sort((p, q) => q.miss.length - p.miss.length || byOrder(p.f, q.f));
+  issues.sort((p, q) => p.e.date < q.e.date ? 1 : p.e.date > q.e.date ? -1 : byOrder(p.f, q.f));
+  const extra = [...notes.map(x => ({ ...x, k: 'note' })), ...late.filter(x => !x.e.note).map(x => ({ ...x, k: 'late' }))]
+    .sort((p, q) => q.e.at - p.e.at);
+  const more = (list, max) => list.length > max ? `<p class="muted chk-more">+ ${list.length - max} more</p>` : '';
+  const fLink = f => `<a href="#" data-openf="${esc(f.id)}">${esc(f.name)}</a>`;
+  const lateTag = e => diffDays(e.date, isoOf(e.at)) >= 2 ? ` <span class="pill est">sent ${diffDays(e.date, isoOf(e.at))} days later</span>` : '';
+
+  const missBox = missing.length || noData.length ? missing.slice(0, 12).map(({ f, miss }) => `<div class="chk-row">
+      ${fLink(f)} <span class="pill err">${miss.length} day${miss.length > 1 ? 's' : ''}</span>
+      <span class="muted grow">${dayRanges(miss)}</span>
+      ${S.canWrite ? `<button class="btn small ghost" data-fill="${miss[miss.length - 1]}">Enter</button>` : ''}
+    </div>`).join('') + more(missing, 12)
+    + (noData.length ? `<div class="chk-row"><span class="grow"><strong>No readings yet:</strong> <span class="muted">${noData.map(f => esc(f.name)).join(', ')}</span></span></div>` : '')
+    : `<p class="muted">Every furnace has a reading for each day up to yesterday.</p>`;
+
+  const issueBox = issues.length ? issues.slice(0, 12).map(({ f, e, r, b, label, cls }) => { const rq = reqFor(f.id, e.date);
+    return `<div class="chk-row">
+      ${fLink(f)} <span class="muted">${weekday(e.date)} ${fmtDay(e.date)}</span> <span class="pill ${cls}">${esc(label)}</span>
+      <span class="grow chk-sub">Reading <strong>${fmt(e.v, 2)}</strong>${r && r.c != null ? ` · used ${fmt(r.c)}${r.span > 1 ? '/day' : ''}` : ''}${b ? ` · usual ${fmt(b)}` : ''}${e.by ? ` · by ${esc(e.by)}` : ''}</span>
+      ${S.canWrite ? `${rq ? `<span class="pill ${reqAnswered(rq[1]) ? 'ok' : 'warn'}">${reqAnswered(rq[1]) ? 'Updated' : 'Asked'}</span>` : `<button class="btn small" data-ask="${esc(f.id)}|${e.date}">Ask to change</button>`} <button class="btn small ghost" data-redit="${esc(f.id)}|${e.date}">Edit</button>` : ''}
+    </div>`; }).join('') + more(issues, 12)
+    : `<p class="muted">No readings look unrealistic in this period.</p>`;
+
+  const noteBox = extra.length ? extra.slice(0, 10).map(({ f, e, k }) => `<div class="chk-row">
+      ${fLink(f)} <span class="muted">${weekday(e.date)} ${fmtDay(e.date)}</span>${lateTag(e)}
+      <span class="grow chk-sub">${k === 'note' ? `<span class="note-txt">${esc(e.note)}</span>` : `Reading ${fmt(e.v, 2)}`}${e.by ? ` <span class="muted">· ${esc(e.by)}</span>` : ''}${e.at ? ` <span class="muted">· ${whenStr(e.at)}</span>` : ''}</span>
+    </div>`).join('') + more(extra, 10)
+    : `<p class="muted">No notes or late entries in this period.</p>`;
+
+  return `<section class="panel chk">
+    <div class="ph"><h2>Data entry check</h2>
+      <div class="seg" role="group" aria-label="Check period">${[7, 14, 30].map(k => `<button data-chk="${k}" aria-pressed="${n === k}">${k} days</button>`).join('')}</div>
+    </div>
+    <div class="chk-stats">
+      <div class="${latest && Date.now() - latest.at > 2 * 864e5 ? 'bad' : ''}"><div class="k">Latest data added</div>
+        <div class="v">${latest ? agoStr(latest.at) : 'Nothing yet'}</div>
+        <div class="n">${latest ? `${esc(latest.f.name)} for ${weekday(latest.date)} ${fmtDay(latest.date)}${latest.by ? ` · by ${esc(latest.by)}` : ''} · ${whenStr(latest.at)}` : 'No readings have been saved'}</div></div>
+      <div class="${todayIn < act.length ? 'warn' : 'good'}"><div class="k">Today’s readings</div>
+        <div class="v">${todayIn} of ${act.length}</div><div class="n">${fmtDate(t)}</div></div>
+      <div class="${complete === t || complete === y ? 'good' : 'warn'}"><div class="k">Last complete day</div>
+        <div class="v">${complete ? `${weekday(complete)} ${fmtDay(complete)}` : 'None'}</div><div class="n">${complete ? 'All furnaces have a reading' : 'No day in the last 90 has every reading'}</div></div>
+      <div class="${fill == null ? '' : fill >= 100 ? 'good' : fill >= 90 ? 'warn' : 'bad'}"><div class="k">Filled in, last ${n} days</div>
+        <div class="v">${fill == null ? '–' : fill + '%'}</div><div class="n">${got} of ${expected} furnace-days, up to yesterday</div></div>
+    </div>
+    <div class="chk-cols">
+      <div class="chk-box"><h3>Missing readings ${missing.length ? `<span class="pill err">${missing.reduce((s, x) => s + x.miss.length, 0)}</span>` : '<span class="pill ok">None</span>'}</h3>${missBox}</div>
+      <div class="chk-box"><h3>Readings to check ${issues.length ? `<span class="pill warn">${issues.length}</span>` : '<span class="pill ok">None</span>'}</h3>${issueBox}</div>
+      <div class="chk-box"><h3>Notes and late entries ${extra.length ? `<span class="pill est">${extra.length}</span>` : ''}</h3>${noteBox}</div>
+    </div>
+  </section>`;
+}
+function bindCheck(main) {
+  $$('[data-chk]', main).forEach(b => b.addEventListener('click', () => { S.chkDays = +b.dataset.chk; lsSet('midal-gas-check-days', String(S.chkDays)); render(true); }));
+  $$('[data-fill]', main).forEach(b => b.addEventListener('click', () => { S.entryDate = b.dataset.fill; go('entry'); }));
 }
 
 /* ---------- ask dialog ---------- */

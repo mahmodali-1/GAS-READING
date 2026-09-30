@@ -79,7 +79,7 @@ Helpers & state → `Store` (modes: `sb` = Supabase, `local` = browser-only prac
 legacy claude.ai artifact storage; the `db` paths are unused on GitHub Pages) → analytics
 (`analyse()`, `sumRange()`, baselines) → groups/rail/switcher/find (Ctrl+K) → Overview, Group,
 Compare, Furnace views → Daily entry (manager table) → Furnaces & settings → legacy in-Claude
-supervisor code → Recently added + requests → Supabase layer (`sbBoot`, login screen, `sbLoadAll`,
+supervisor code → Recently added + requests → Data entry check (`checkPanel()`: missing days, unrealistic readings, notes/late entries, latest activity; Overview) → Supabase layer (`sbBoot`, login screen, `sbLoadAll`,
 `sbPoll` every 60 s, `sbWrite` upserts in batches of 500) → simple supervisor wizard (`SS`, `sp*`
 functions, `supCheck()` rules) → Import/Export → boot.
 
