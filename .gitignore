@@ -1,0 +1,5 @@
+# Never commit real data or secrets (repo is public)
+*.xlsx
+*.xls
+*.csv
+.env*
