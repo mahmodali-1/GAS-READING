@@ -43,7 +43,8 @@ Supabase. Role comes from `public.profiles.role` on the server, never from the b
 
 ## Database (see `supabase-setup.sql`)
 Tables: `profiles`, `furnaces`, `readings` (PK furnace_id+reading_date), `settings` (single row),
-`requests` (manager → supervisor change requests), `readings_log` (audit trail via trigger).
+`requests` (manager → supervisor change requests), `readings_log` (audit trail via trigger),
+`reviewed_batches` (manager marked a Recently added batch as read; manager only).
 
 Security model — **the database enforces everything; the page only chooses which screen to show**:
 - RLS on every table. `readings`, `requests`, `readings_log`: manager only. `furnaces`, `settings`:

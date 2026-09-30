@@ -126,13 +126,14 @@ const Store = {
           S.months = new Map(raw.months || []);
           S.settings = { ...DEFAULT_SETTINGS, ...(raw.settings || {}) };
           S.requests = raw.requests || {};
+          S.reviewed = raw.reviewed || {};
         }
       } catch {}
       S.loaded.f = S.loaded.r = true; changed(true);
   },
   persistLocal() {
     if (this.mode !== 'local') return;
-    lsSet(LS_KEY, JSON.stringify({ furnaces: S.furnaces, months: [...S.months], settings: S.settings, requests: S.requests }));
+    lsSet(LS_KEY, JSON.stringify({ furnaces: S.furnaces, months: [...S.months], settings: S.settings, requests: S.requests, reviewed: S.reviewed }));
   },
   async setMonth(id, body) { if (this.mode === 'sb') return; if (this.mode === 'db') await this.db.doc('readings/' + id).set(body); else this.persistLocal(); },
   async delMonth(id) { if (this.mode === 'sb') return; if (this.mode === 'db') await this.db.doc('readings/' + id).delete(); else this.persistLocal(); },
@@ -1705,9 +1706,27 @@ function reqAnswered(r) {
   const e = entryAt(r.fid, r.date); return !!(e && e.at > r.at);
 }
 
+/* ---------- read / unread: the manager ticks off batches he has checked ---------- */
+S.reviewed = {};          // 'date|by' -> ms when marked as read
+S.recentHist = false;
+const batchKey = b => b.date + '|' + b.by;
+const isRead = b => (S.reviewed[batchKey(b)] || 0) >= b.at;   // new or corrected readings make it unread again
+async function setRead(batches, read) {
+  if (!batches.length) return;
+  const rows = batches.map(b => ({ reading_date: b.date, entered_by: b.by, reviewed_at: new Date(Math.max(Date.now(), b.at)).toISOString() }));
+  batches.forEach((b, i) => { if (read) S.reviewed[batchKey(b)] = Date.parse(rows[i].reviewed_at); else delete S.reviewed[batchKey(b)]; });
+  changed(true);
+  if (Store.mode === 'sb') {
+    let error;
+    if (read) ({ error } = await SB.client.from('reviewed_batches').upsert(rows, { onConflict: 'reading_date,entered_by' }));
+    else for (const b of batches) { ({ error } = await SB.client.from('reviewed_batches').delete().eq('reading_date', b.date).eq('entered_by', b.by)); if (error) break; }
+    if (error) toast(sbErr(error), true);
+  } else Store.persistLocal();
+}
+
 /* ---------- batches of recently added readings ---------- */
 function recentBatches() {
-  const since = Date.now() - 21 * 864e5, map = new Map();
+  const since = Date.now() - 90 * 864e5, map = new Map();
   for (const f of activeFurnaces()) {
     for (const e of entriesOf(f.id)) {
       if (!e.at || e.at < since || e.by === 'Import') continue;
@@ -1716,17 +1735,19 @@ function recentBatches() {
       const b = map.get(key); b.at = Math.max(b.at, e.at); b.rows.push({ f, e });
     }
   }
-  const out = [...map.values()].sort((a, b) => b.at - a.at).slice(0, 6);
+  const out = [...map.values()].sort((a, b) => b.at - a.at);
   out.forEach(b => b.rows.sort((p, q) => byOrder(p.f, q.f)));
   return out;
 }
 const whenStr = t => new Date(t).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
 function recentPanel() {
-  const batches = recentBatches();
+  const all = recentBatches(), unread = all.filter(b => !isRead(b)), read = all.filter(isRead);
+  const hist = S.recentHist, MAX = hist ? 30 : 8;
+  const batches = (hist ? read : unread).slice(0, MAX), hidden = (hist ? read : unread).length - batches.length;
   const open = Object.entries(S.requests).filter(([, r]) => r.status === 'open' && furnace(r.fid)).sort((a, b) => b[1].at - a[1].at);
-  if (!batches.length && !open.length) return '';
-  if (S.recentOpen == null && batches[0]) S.recentOpen = batches[0].date + '|' + batches[0].by;
+  if (!all.length && !open.length) return '';
+  if (S.recentOpen == null && unread[0]) S.recentOpen = batchKey(unread[0]);
   const rowInfo = (f, e) => {
     const a = analyse(f), r = a.daily.get(e.date);
     let warn = !!(r && ['high', 'low', 'drop'].includes(r.status)), extra = '';
@@ -1754,6 +1775,8 @@ function recentPanel() {
         <span>${b.rows.length} reading${b.rows.length > 1 ? 's' : ''}${b.by ? ` by <strong>${esc(b.by)}</strong>` : ''}</span>
         <span class="muted">sent ${whenStr(b.at)}</span>
         <span class="b-tags">${notes ? `<span class="pill est">${notes} note${notes > 1 ? 's' : ''}</span>` : ''}${warns ? `<span class="pill warn">${warns} to check</span>` : ''}</span>
+        ${hist ? `<span class="muted b-read">read ${whenStr(S.reviewed[key])}</span>` : ''}
+        ${S.canWrite ? `<button class="btn small ${hist ? 'ghost' : ''} b-mark" data-read="${esc(key)}" data-to="${hist ? '0' : '1'}" title="${hist ? 'Show it in Recently added again' : 'Remove from this list; it stays in History'}">${hist ? 'Mark as unread' : '✓ Mark as read'}</button>` : ''}
       </summary>
       ${rows.length ? `<div class="tw"><table class="recent-t">
         <thead><tr><th>Furnace</th><th class="num">Reading</th><th class="num">Used</th><th>Check</th><th>Note</th><th></th></tr></thead>
@@ -1768,17 +1791,30 @@ function recentPanel() {
         </tr>`; }).join('')}</tbody></table></div>` : '<p class="muted" style="margin:10px 0 0">Nothing with notes or warnings in this batch.</p>'}
     </details>`;
   }).join('');
+  const empty = hist ? 'Nothing marked as read in the last 90 days.' : read.length ? 'All caught up — every recent batch is marked as read.' : 'No readings added in the last 90 days.';
   return `<section class="panel recent">
-    <div class="ph"><h2>Recently added</h2>
-      <label class="check"><input type="checkbox" id="recentOnly" ${S.recentOnly ? 'checked' : ''}>Only notes, warnings and requests</label>
+    <div class="ph"><h2>${hist ? 'Read history' : 'Recently added'}${!hist && unread.length ? ` <span class="pill warn">${unread.length} unread</span>` : ''}</h2>
+      <div class="recent-tools">
+        <label class="check"><input type="checkbox" id="recentOnly" ${S.recentOnly ? 'checked' : ''}>Only notes, warnings and requests</label>
+        ${!hist && unread.length > 1 && S.canWrite ? '<button class="btn small" id="readAll">✓ Mark all as read</button>' : ''}
+        <button class="btn small ghost" id="recentHist">${hist ? '‹ Back to unread' : `History${read.length ? ` (${read.length})` : ''}`}</button>
+      </div>
     </div>
-    ${reqList}
-    ${body || '<p class="muted">No readings added in the last three weeks.</p>'}
+    ${hist ? '' : reqList}
+    ${body || `<p class="muted">${empty}</p>`}
+    ${hidden > 0 ? `<p class="muted chk-more">+ ${hidden} older ${hist ? 'read' : 'unread'} batch${hidden > 1 ? 'es' : ''}${hist ? '' : ' — use Mark all as read to clear them'}</p>` : ''}
   </section>`;
 }
 function bindRecent(main) {
   const ro = $('#recentOnly', main);
   ro && ro.addEventListener('change', () => { S.recentOnly = ro.checked; lsSet('midal-gas-recent-only', ro.checked ? '1' : '0'); render(true); });
+  const rh = $('#recentHist', main); rh && rh.addEventListener('click', () => { S.recentHist = !S.recentHist; render(true); });
+  const ra = $('#readAll', main); ra && ra.addEventListener('click', () => setRead(recentBatches().filter(b => !isRead(b)), true));
+  $$('[data-read]', main).forEach(b => b.addEventListener('click', e => {
+    e.preventDefault(); e.stopPropagation();   // the button sits inside <summary>: don't open/close the batch
+    const batch = recentBatches().find(x => batchKey(x) === b.dataset.read);
+    if (batch) setRead([batch], b.dataset.to === '1');
+  }));
   $$('details.batch', main).forEach(d => d.addEventListener('toggle', () => { if (d.open) S.recentOpen = d.dataset.key; else if (S.recentOpen === d.dataset.key) S.recentOpen = ''; }));
   $$('[data-openf]', main).forEach(a => a.addEventListener('click', e => { e.preventDefault(); go('furnace', a.dataset.openf); }));
   $$('[data-redit]', main).forEach(b => b.addEventListener('click', () => { const [fid, date] = b.dataset.redit.split('|'); openReading(fid, date); }));
@@ -2146,6 +2182,8 @@ async function sbLoadRequests() {
   const { data } = await SB.client.from('requests').select('*').order('created_at');
   S.requests = {};
   (data || []).forEach(q => { S.requests[q.id] = { fid: q.furnace_id, date: q.reading_date, msg: q.message, at: Date.parse(q.created_at), status: q.status, closedAt: q.closed_at ? Date.parse(q.closed_at) : 0 }; });
+  const rv = await SB.client.from('reviewed_batches').select('reading_date, entered_by, reviewed_at');
+  if (!rv.error) { S.reviewed = {}; (rv.data || []).forEach(r => { S.reviewed[r.reading_date + '|' + r.entered_by] = Date.parse(r.reviewed_at); }); }
 }
 async function sbLoadAll() {
   try {

@@ -256,6 +256,19 @@ grant execute on function public.my_day(date) to authenticated;
 grant execute on function public.my_requests() to authenticated;
 
 
+-- batches of readings the manager has marked as read on the Overview
+create table if not exists public.reviewed_batches (
+  reading_date date not null,
+  entered_by   text not null default '',
+  reviewed_at  timestamptz not null default now(),
+  primary key (reading_date, entered_by),
+  constraint reviewed_by_len check (char_length(entered_by) <= 60)
+);
+alter table public.reviewed_batches enable row level security;
+drop policy if exists "reviewed: manager all" on public.reviewed_batches;
+create policy "reviewed: manager all" on public.reviewed_batches
+  for all to authenticated using (public.is_manager()) with check (public.is_manager());
+
 -- ------------------------------------------------------------ hardening
 -- data limits (reject nonsense even from the manager's own screen)
 do $$ begin
