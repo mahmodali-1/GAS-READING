@@ -366,8 +366,8 @@ function render(forceMain) {
   S._lastView = S.view;
   S.charts.forEach(c => c.destroy()); S.charts = [];
   const main = $('#main');
-  const views = { overview: viewOverview, group: viewGroup, compare: viewCompare, furnace: viewFurnace, entry: viewEntry, data: viewData, manage: viewManage };
-  if (!S.furnaces.length && (S.view === 'overview' || S.view === 'group' || S.view === 'compare' || S.view === 'furnace' || S.view === 'entry')) main.innerHTML = viewEmpty();
+  const views = { overview: viewOverview, group: viewGroup, compare: viewCompare, furnace: viewFurnace, entry: viewEntry, check: viewCheck, data: viewData, manage: viewManage };
+  if (!S.furnaces.length && (S.view === 'overview' || S.view === 'group' || S.view === 'compare' || S.view === 'furnace' || S.view === 'entry' || S.view === 'check')) main.innerHTML = viewEmpty();
   else (views[S.view] || viewOverview)(main);
 }
 function go(view, fid) {
@@ -619,7 +619,6 @@ function viewOverview(main) {
     ${figG}
     <div class="fig"><div class="k">Readings in today</div><div class="v">${readToday}<small>of ${act.length}</small></div><div class="n">${readToday < act.length && S.canWrite ? '<a href="#" id="toEntry">Enter today’s readings</a>' : fmtDate(t)}</div></div>
   </section>
-  ${checkPanel()}
   ${recentPanel()}
   <div class="cols">
     <section class="panel">
@@ -645,7 +644,7 @@ function viewOverview(main) {
         ${flagged.filter(x => x.g === g).sort((p, q) => p.f.order - q.f.order || (p.d < q.d ? 1 : -1)).map(({ f, d, r }) => `<tr class="click" data-fid="${esc(f.id)}"><td class="fcell">${esc(f.name)}</td><td>${weekday(d)} ${fmtDay(d)}</td><td class="num">${r.c == null ? '–' : fmt(r.c)}</td><td class="num">${fmt(r.base)}</td><td>${statusPill(r)}</td></tr>`).join('')}</tbody>`).join('')}
     </table></div>` : `<p class="muted">Every furnace stayed within its usual range over the last week.</p>`}
   </section>`;
-  bindRange(main); bindSwitcher(main); bindRecent(main); bindCheck(main);
+  bindRange(main); bindSwitcher(main); bindRecent(main);
   $$('tr[data-fid]', main).forEach(tr => tr.addEventListener('click', () => go('furnace', tr.dataset.fid)));
   $$('tr[data-group]', main).forEach(tr => tr.addEventListener('click', () => { S.group = tr.dataset.group; go('group'); }));
   const te = $('#toEntry'); te && te.addEventListener('click', e => { e.preventDefault(); S.entryDate = todayISO(); go('entry'); });
@@ -1910,7 +1909,7 @@ function checkPanel() {
     : `<p class="muted">No notes or late entries in this period.</p>`;
 
   return `<section class="panel chk">
-    <div class="ph"><h2>Data entry check</h2>
+    <div class="ph"><h2>Last ${n} days</h2>
       <div class="seg" role="group" aria-label="Check period">${[7, 14, 30].map(k => `<button data-chk="${k}" aria-pressed="${n === k}">${k} days</button>`).join('')}</div>
     </div>
     <div class="chk-stats">
@@ -1930,6 +1929,14 @@ function checkPanel() {
       <div class="chk-box"><h3>Notes and late entries ${extra.length ? `<span class="pill est">${extra.length}</span>` : ''}</h3>${noteBox}</div>
     </div>
   </section>`;
+}
+function viewCheck(main) {
+  main.innerHTML = `
+  <div class="page-head">
+    <div class="grow"><h1>Data entry check</h1><p class="sub">Missing readings, readings that look wrong, notes and late entries · ${activeFurnaces().length} active furnaces</p></div>
+  </div>
+  ${checkPanel() || '<p class="muted">No active furnaces yet.</p>'}`;
+  bindRecent(main); bindCheck(main);   // Ask to change / Edit / furnace links use the Recently added handlers
 }
 function bindCheck(main) {
   $$('[data-chk]', main).forEach(b => b.addEventListener('click', () => { S.chkDays = +b.dataset.chk; lsSet('midal-gas-check-days', String(S.chkDays)); render(true); }));

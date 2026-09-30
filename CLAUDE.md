@@ -33,7 +33,8 @@ Supabase. Role comes from `public.profiles.role` on the server, never from the b
 
 - **Manager**: full dashboard — Overview (HF/TF split, Recently added panel with notes and change
   requests), group pages, per-furnace pages, Compare (2–12 furnaces, custom colours, index scale),
-  Daily entry table, Import/Export Excel, Furnaces & settings. Auto-logout after 30 idle minutes.
+  Daily entry table, Entry check tab (missing / unusual / late readings), Import/Export Excel,
+  Furnaces & settings. Auto-logout after 30 idle minutes.
 - **Supervisor** (non-technical, on a phone): simplified wizard only. Today/Yesterday buttons →
   one furnace per screen → custom on-screen number pad (digits and `.` only; the phone keyboard never
   opens) → red highlight + confirm dialog for unrealistic numbers (lower than last reading, missing
@@ -80,7 +81,7 @@ Helpers & state → `Store` (modes: `sb` = Supabase, `local` = browser-only prac
 legacy claude.ai artifact storage; the `db` paths are unused on GitHub Pages) → analytics
 (`analyse()`, `sumRange()`, baselines) → groups/rail/switcher/find (Ctrl+K) → Overview, Group,
 Compare, Furnace views → Daily entry (manager table) → Furnaces & settings → legacy in-Claude
-supervisor code → Recently added + requests → Data entry check (`checkPanel()`: missing days, unrealistic readings, notes/late entries, latest activity; Overview) → Supabase layer (`sbBoot`, login screen, `sbLoadAll`,
+supervisor code → Recently added + requests → Data entry check (`checkPanel()`: missing days, unrealistic readings, notes/late entries, latest activity; own tab "Entry check", view `check`) → Supabase layer (`sbBoot`, login screen, `sbLoadAll`,
 `sbPoll` every 60 s, `sbWrite` upserts in batches of 500) → simple supervisor wizard (`SS`, `sp*`
 functions, `supCheck()` rules) → Import/Export → boot.
 
