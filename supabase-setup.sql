@@ -325,6 +325,12 @@ alter default privileges in schema public revoke all on tables from anon;
 alter default privileges in schema public revoke all on sequences from anon;
 revoke all on public.readings_log from authenticated;
 grant select on public.readings_log to authenticated;
+-- signed-in users only get what the row rules above cover: no TRUNCATE
+-- (it ignores row security), no triggers, no creating/deleting profiles
+revoke truncate, trigger, references on all tables in schema public from authenticated;
+alter default privileges in schema public revoke truncate, trigger, references on tables from authenticated;
+revoke insert, delete on public.profiles from authenticated;
+alter default privileges in schema public revoke execute on functions from anon, public;
 
 revoke all on function public.my_role() from public, anon;
 revoke all on function public.is_manager() from public, anon;
