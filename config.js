@@ -3,6 +3,6 @@
    The key must be the PUBLIC 'anon' / 'publishable' key.
    NEVER put the service_role / secret key or any password here. */
 window.MIDAL_CONFIG = {
-  supabaseUrl: '',   // e.g. 'https://abcdxyz.supabase.co'
-  supabaseKey: '',   // e.g. 'sb_publishable_...'
+  supabaseUrl: 'https://qoqcskjogdmgvsheasjv.supabase.co',   // e.g. 'https://abcdxyz.supabase.co'
+  supabaseKey: 'sb_publishable_9AM_t-z0XdM6W2c4UutZNw_8l0uCVjW',   // e.g. 'sb_publishable_...'
 };
