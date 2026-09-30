@@ -1975,7 +1975,7 @@ const TXT = {
     sent: 'Sent', notSent: 'Not sent yet', editSent: 'Change sent readings', sentAt: 'Sent at',
     last: 'Last reading', noPrev: 'No earlier reading', used: 'Used', perDay: 'per day', since: 'since',
     next: 'Next', prev: 'Back', skip: 'Skip', review: 'Review', send: 'Send readings', sending: 'Sending…',
-    stopped: 'Stopped', stoppedHint: 'same as last', maint: 'Maintenance', meter: 'Meter problem',
+    stopped: 'Stopped', stoppedHint: 'same as last', zeroHint: 'use 0', maint: 'Maintenance', meter: 'Meter problem',
     lower: 'Lower than the last reading', decimal: 'Too high — did you miss the decimal point?', missing: 'Too low — is a digit missing?',
     high: 'Not realistic — much higher than usual', low: 'Not realistic — much lower than usual', ok: 'Looks right', first: 'First reading for this furnace', zero: 'No gas used',
     confirmT: 'This number looks wrong', confirmB: 'Please look at the meter again before you continue.', fix: 'Fix it', correct: 'It is correct',
@@ -1997,7 +1997,7 @@ const TXT = {
     sent: 'تم الإرسال', notSent: 'لم تُرسل بعد', editSent: 'تعديل القراءات المرسلة', sentAt: 'أُرسلت الساعة',
     last: 'آخر قراءة', noPrev: 'لا توجد قراءة سابقة', used: 'الاستهلاك', perDay: 'في اليوم', since: 'منذ',
     next: 'التالي', prev: 'رجوع', skip: 'تخطي', review: 'مراجعة', send: 'إرسال القراءات', sending: 'جارٍ الإرسال…',
-    stopped: 'متوقف', stoppedHint: 'نفس القراءة السابقة', maint: 'صيانة', meter: 'مشكلة في العداد',
+    stopped: 'متوقف', stoppedHint: 'نفس القراءة السابقة', zeroHint: 'الاستهلاك 0', maint: 'صيانة', meter: 'مشكلة في العداد',
     lower: 'أقل من القراءة السابقة', decimal: 'مرتفعة جداً — هل نسيت الفاصلة العشرية؟', missing: 'منخفضة جداً — هل هناك رقم ناقص؟',
     high: 'غير واقعية — أعلى بكثير من المعتاد', low: 'غير واقعية — أقل بكثير من المعتاد', ok: 'تبدو صحيحة', first: 'أول قراءة لهذا الفرن', zero: 'لا يوجد استهلاك',
     confirmT: 'هذا الرقم يبدو غير صحيح', confirmB: 'انظر إلى العداد مرة أخرى قبل المتابعة.', fix: 'تصحيح', correct: 'الرقم صحيح',
@@ -2299,6 +2299,8 @@ function spHome(main) {
 }
 function spEntry(main) {
   const f = SS.furnaces[SS.idx], d = supVal(f.id), st = supStatus(f), L = SS.last[f.id];
+  /* Stopped / Maintenance / Meter problem = no gas counted: the meter stays at the last reading */
+  const same = f.mode === 'consumption' ? '0' : L && L.prev_value != null ? String(L.prev_value) : null;
   const n = SS.furnaces.length, isLast = SS.idx === n - 1;
   const g = groupOf(f);
   main.innerHTML = `<div class="sp sp-entry">
@@ -2310,9 +2312,7 @@ function spEntry(main) {
       <div class="sp-num ${st.state}" dir="ltr" aria-live="polite">${d.v ? esc(d.v) : `<span class="ph">${T('typed')}</span>`}</div>
       <div class="sp-check ${st.state}">${st.state === 'empty' ? '&nbsp;' : `${st.state === 'red' ? '✕' : '✓'} ${esc(st.msg)}${st.used != null && st.state !== 'empty' && f.mode !== 'consumption' ? ` · ${T('used')} <span dir="ltr">${fmt(st.used)}</span>${st.gap > 1 ? ' ' + T('perDay') : ''}` : ''}`}</div>
       <div class="sp-chips">
-        ${f.mode !== 'consumption' && L && L.prev_value != null ? `<button class="sp-chip ${d.note === T('stopped') ? 'on' : ''}" data-chip="stopped">${T('stopped')}<small>${T('stoppedHint')}</small></button>` : ''}
-        <button class="sp-chip ${d.note === T('maint') ? 'on' : ''}" data-chip="maint">${T('maint')}</button>
-        <button class="sp-chip ${d.note === T('meter') ? 'on' : ''}" data-chip="meter">${T('meter')}</button>
+        ${['stopped', 'maint', 'meter'].map(k => `<button class="sp-chip ${d.note === T(k) ? 'on' : ''}" data-chip="${k}">${T(k)}${same != null ? `<small>${T(f.mode === 'consumption' ? 'zeroHint' : 'stoppedHint')}</small>` : ''}</button>`).join('')}
       </div>
     </div>
     <div class="sp-pad" dir="ltr">${['1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', '⌫'].map(k => `<button class="sp-key ${k === '⌫' ? 'del' : ''}" data-k="${k}">${k}</button>`).join('')}</div>
@@ -2334,9 +2334,8 @@ function spEntry(main) {
   document.addEventListener('keydown', SS.keyHandler);
   $$('[data-chip]', main).forEach(b => b.onclick = () => {
     const kind = b.dataset.chip, label = T(kind), cur = supVal(f.id);
-    if (cur.note === label) { supSet(f.id, { note: '' }); }
-    else if (kind === 'stopped') supSet(f.id, { note: label, v: String(L.prev_value), ok: false });
-    else supSet(f.id, { note: label });
+    if (cur.note === label) supSet(f.id, { note: '', ...(same != null && cur.v === same ? { v: '' } : {}) });
+    else supSet(f.id, { note: label, ...(same != null ? { v: same, ok: false } : {}) });
     renderSimpleSup();
   });
   $$('[data-go]', main).forEach(b => b.onclick = () => { SS.idx = +b.dataset.go; renderSimpleSup(); });
