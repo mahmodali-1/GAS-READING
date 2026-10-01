@@ -966,7 +966,61 @@ function chartBase() {
     },
   };
 }
-function mkChart(canvas, cfg) { if (!window.Chart || !canvas) return; const c = new Chart(canvas, cfg); S.charts.push(c); return c; }
+/* Charts with 3+ series: the hover values go in a strip under the chart instead of a box
+   over it, so nothing behind is hidden. A thin line marks the hovered day on line charts. */
+function readoutBox(canvas) {
+  const box = canvas.parentElement; let ro = box.nextElementSibling;
+  if (!ro || !ro.classList.contains('readout')) { ro = document.createElement('div'); ro.className = 'readout'; box.after(ro); }
+  return ro;
+}
+function readoutHint(ro) {
+  const h = document.createElement('div'); h.className = 'ro-title ro-hint';
+  h.textContent = 'Point at the chart (or tap it) to see the values for that day';
+  ro.replaceChildren(h);
+}
+function readoutTooltip({ chart, tooltip: tt }) {
+  const ro = readoutBox(chart.canvas);
+  if (tt.opacity === 0 || !tt.dataPoints || !tt.dataPoints.length) { readoutHint(ro); return; }
+  const head = document.createElement('div'); head.className = 'ro-title';
+  head.textContent = (tt.title || []).join(' ');
+  if (tt.footer && tt.footer.length) { const f = document.createElement('span'); f.className = 'ro-foot'; f.textContent = tt.footer.join(' · '); head.append(f); }
+  const grid = document.createElement('div'); grid.className = 'ro-items';
+  tt.body.forEach((b, i) => {
+    const txt = b.lines.join(' ').trim(), cut = txt.lastIndexOf(': ');
+    const it = document.createElement('div'); it.className = 'ro-item';
+    const sw = document.createElement('i'); sw.className = 'sw';
+    const ds = tt.dataPoints[i] ? tt.dataPoints[i].dataset : {}, line = (ds.type || chart.config.type) === 'line';
+    const col = line ? ds.borderColor : ds.backgroundColor; sw.style.background = typeof col === 'string' ? col : (tt.labelColors[i] || {}).backgroundColor;
+    const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = cut > 0 ? txt.slice(0, cut) : txt;
+    it.append(sw, nm);
+    if (cut > 0) { const v = document.createElement('strong'); v.textContent = txt.slice(cut + 2); it.append(v); }
+    grid.append(it);
+  });
+  ro.replaceChildren(head, grid);
+  // keep the strip at its tallest size so the page doesn't jump while moving along the chart
+  ro.style.minHeight = Math.max(parseFloat(ro.style.minHeight) || 0, ro.offsetHeight) + 'px';
+}
+const hoverLine = {
+  id: 'hoverLine',
+  afterDatasetsDraw(c) {
+    if (c.config.type !== 'line') return;
+    const a = c.tooltip && c.tooltip.getActiveElements ? c.tooltip.getActiveElements() : [];
+    if (!a.length) return;
+    const x = a[0].element.x, { top, bottom } = c.chartArea, g = c.ctx;
+    g.save(); g.strokeStyle = css('--muted'); g.globalAlpha = .6; g.lineWidth = 1; g.setLineDash([4, 3]);
+    g.beginPath(); g.moveTo(x, top); g.lineTo(x, bottom); g.stroke(); g.restore();
+  },
+};
+function mkChart(canvas, cfg) {
+  if (!window.Chart || !canvas) return;
+  const tip = cfg.options && cfg.options.plugins && cfg.options.plugins.tooltip;
+  if (tip && tip.enabled !== false && cfg.data.datasets.length >= 3) {
+    tip.enabled = false; tip.external = readoutTooltip;
+    readoutHint(readoutBox(canvas));
+  }
+  cfg.plugins = [...(cfg.plugins || []), hoverLine];
+  const c = new Chart(canvas, cfg); S.charts.push(c); return c;
+}
 function alpha(hex, a) {
   if (!hex.startsWith('#')) return hex;
   const n = parseInt(hex.slice(1).length === 3 ? hex.slice(1).split('').map(c => c + c).join('') : hex.slice(1), 16);
